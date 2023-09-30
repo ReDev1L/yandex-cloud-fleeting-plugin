@@ -1,4 +1,4 @@
-module fleeting-plugin-yc
+module gitlab.com/k.mukhin/fleeting-plugin-yc
 
 go 1.21
 
