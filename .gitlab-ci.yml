@@ -1,0 +1,45 @@
+variables:
+  GOLANG_IMAGE: golang:1.20
+
+stages:
+  - build
+  - release
+  
+build:
+  image: $GOLANG_IMAGE
+  stage: build
+  script: 
+    - go build -o fleeting-plugin-yc ./cmd/fleeting-plugin-yc
+  after_script:
+    - echo "JOB_ID=$CI_JOB_ID" >> job.env
+  artifacts:
+    paths:
+      - fleeting-plugin-yc
+    reports:
+      dotenv: job.env
+  only:
+    refs:
+      - main
+      - tags
+         
+
+create release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/release-cli:latest
+  needs:
+    - job: build
+      artifacts: true
+  rules:
+    - if: $CI_COMMIT_TAG
+      when: always
+  script:
+    - echo "Create release for $CI_COMMIT_TAG"
+  release:
+    name: 'Release $CI_COMMIT_TAG'
+    description: 'Release $CI_COMMIT_TAG'
+    tag_name: '$CI_COMMIT_TAG'
+    ref: '$CI_COMMIT_SHA'
+    assets:
+      links:
+        - name: 'fleeting-plugin-yc'
+          url: '$CI_PROJECT_URL/-/jobs/$JOB_ID/artifacts/download'
