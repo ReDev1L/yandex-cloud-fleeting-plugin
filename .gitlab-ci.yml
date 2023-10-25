@@ -40,6 +40,8 @@ binaries:
       - linux/amd64 linux/arm64
       - windows/amd64.exe windows/386.exe
   needs: []
+  only:
+  - tags
 
 upload-binaries:
   stage: upload
@@ -54,6 +56,8 @@ upload-binaries:
   artifacts:
     paths:
       - manifest.txt
+  only:
+  - tags
 
 release:
   stage: release
@@ -63,4 +67,7 @@ release:
   script:
     - apk add make bash curl
     - make release
+  only:
+  - tags
+
 
