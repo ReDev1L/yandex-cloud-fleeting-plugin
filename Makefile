@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := build
 
 export NAME ?= $(shell basename $(shell pwd))
-export VERSION := v$(shell cat VERSION)
+export VERSION := $(shell cat VERSION)
 export OUT_PATH ?= out
 export CGO_ENABLED ?= 0
 
