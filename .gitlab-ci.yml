@@ -1,45 +1,65 @@
+default:
+  tags:
+    - gitlab-org
+
 variables:
   GOLANG_IMAGE: golang:1.20
+  CGO_ENABLED: 0
+  OUT_PATH: out
+  PACKAGE_REGISTRY_URL: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/releases"
+
+.go-cache:
+  variables:
+    GOCACHE: $CI_PROJECT_DIR/.gocache
+  before_script:
+  - mkdir -p "${GOCACHE}"
+  cache:
+    paths:
+    - $CI_PROJECT_DIR/.gocache/
+    key: "${CI_JOB_NAME_SLUG}"
+
 
 stages:
   - build
+  - upload
   - release
   
-build:
-  image: $GOLANG_IMAGE
+binaries:
   stage: build
   script: 
-    - env GOOS=linux GOARCH=amd64 go build -o fleeting-plugin-yc ./cmd/fleeting-plugin-yc
-  after_script:
-    - echo "JOB_ID=$CI_JOB_ID" >> job.env
+    - make all
   artifacts:
     paths:
-      - fleeting-plugin-yc
-    reports:
-      dotenv: job.env
-  only:
-    refs:
-      - main
-      - tags
-         
+      - ${OUT_PATH}/${CI_PROJECT_NAME}-*
+  parallel:
+    matrix:
+    - OS_ARCHS:
+      - darwin/amd64 darwin/arm64
+      - freebsd/amd64 freebsd/arm64
+      - linux/amd64 linux/arm64
+      - windows/amd64.exe windows/386.exe
+  needs: []
 
-create release:
+upload-binaries:
+  stage: upload
+  image: alpine:latest
+  dependencies:
+    - binaries
+  script:
+    - apk add curl gnupg make
+    - make upload-release
+  environment:
+    name: upload
+  artifacts:
+    paths:
+      - manifest.txt
+
+release:
   stage: release
   image: registry.gitlab.com/gitlab-org/release-cli:latest
-  needs:
-    - job: build
-      artifacts: true
-  rules:
-    - if: $CI_COMMIT_TAG
-      when: always
+  dependencies:
+    - upload-binaries
   script:
-    - echo "Create release for $CI_COMMIT_TAG"
-  release:
-    name: 'Release $CI_COMMIT_TAG'
-    description: 'Release $CI_COMMIT_TAG'
-    tag_name: '$CI_COMMIT_TAG'
-    ref: '$CI_COMMIT_SHA'
-    assets:
-      links:
-        - name: 'fleeting-plugin-yc'
-          url: '$CI_PROJECT_URL/-/jobs/$JOB_ID/artifacts/download'
+    - apk add make bash curl
+    - make release
+

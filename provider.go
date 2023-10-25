@@ -76,7 +76,11 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	instanceGroupTemplateNetwork := &instancegroup.NetworkInterfaceSpec{
 		NetworkId:            iTemplate.Network.Network,
 		SubnetIds:            []string{iTemplate.Network.Subnet},
-		PrimaryV4AddressSpec: &instancegroup.PrimaryAddressSpec{OneToOneNatSpec: &instancegroup.OneToOneNatSpec{IpVersion: instancegroup.IpVersion_IPV4}},
+		PrimaryV4AddressSpec: &instancegroup.PrimaryAddressSpec{},
+	}
+
+	if iTemplate.Network.Nat {
+		instanceGroupTemplateNetwork.PrimaryV4AddressSpec = &instancegroup.PrimaryAddressSpec{OneToOneNatSpec: &instancegroup.OneToOneNatSpec{IpVersion: instancegroup.IpVersion_IPV4}}
 	}
 
 	var listInstanceGroupTemplateNetwork []*instancegroup.NetworkInterfaceSpec
@@ -86,7 +90,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: iTemplate.Zone})
 
 	instanceGroupTemplate := &instancegroup.InstanceTemplate{
-		Name:       "default-template-{instance.index}",
+		Name:       "fleeting-runner-{instance.index}",
 		PlatformId: iTemplate.Platform,
 		ResourcesSpec: &instancegroup.ResourcesSpec{
 			Cores:        iTemplate.Resources.CPU,
@@ -261,7 +265,7 @@ func (g *InstanceGroup) ConnectInfo(ctx context.Context, instanceId string) (pro
 			ipAddress := instance.NetworkInterfaces[0].GetPrimaryV4Address()
 
 			info.InternalAddr = ipAddress.Address
-			info.ExternalAddr = ipAddress.OneToOneNat.Address
+			info.ExternalAddr = ipAddress.OneToOneNat.GetAddress()
 		}
 	}
 

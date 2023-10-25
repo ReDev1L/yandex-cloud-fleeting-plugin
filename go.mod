@@ -3,6 +3,7 @@ module gitlab.com/k.mukhin/fleeting-plugin-yc
 go 1.21
 
 require (
+	github.com/ghodss/yaml v1.0.0
 	github.com/hashicorp/go-hclog v1.1.0
 	github.com/yandex-cloud/go-genproto v0.0.0-20230918115514-93a99045c9de
 	github.com/yandex-cloud/go-sdk v0.0.0-20230918120620-9e95f0816d79
@@ -13,7 +14,6 @@ require (
 
 require (
 	github.com/fatih/color v1.7.0 // indirect
-	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/golang-jwt/jwt/v4 v4.1.0 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
