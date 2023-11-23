@@ -171,20 +171,22 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	} else {
 		// Update metadata for exist instance group
 		// Change ssh-key
+		log.Println("Update IG", g.InstanceGroupId)
 		UpdateInstanceReq := instancegroup.UpdateInstanceGroupRequest{
 			InstanceGroupId:  g.InstanceGroupId,
 			InstanceTemplate: &instancegroup.InstanceTemplate{Metadata: map[string]string{"ssh-keys": g.settings.Username + ":" + g.SshPublicKey}},
 			UpdateMask:       &fieldmaskpb.FieldMask{Paths: []string{"instance_template.metadata"}},
 		}
-		op, err := sdk.WrapOperation(g.ycsdk.InstanceGroup().InstanceGroup().Update(ctx, &UpdateInstanceReq))
+
+		op, err := sdk.WrapOperation(sdk.InstanceGroup().InstanceGroup().Update(ctx, &UpdateInstanceReq))
 
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("Request for update error", err)
 		}
 
 		err = op.Wait(ctx)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatal("Wait request update error", err)
 		}
 	}
 
