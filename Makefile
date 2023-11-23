@@ -72,5 +72,5 @@ release:
 
 .PHONY: do-release
 do-release:
-	git tag -s $(VERSION) -m "Version $(VERSION)"
+	git tag $(VERSION) -m "Version $(VERSION)"
 	git push origin $(VERSION)

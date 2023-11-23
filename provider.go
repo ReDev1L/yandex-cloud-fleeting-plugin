@@ -10,11 +10,23 @@ import (
 	"gitlab.com/gitlab-org/fleeting/fleeting/provider"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 	"log"
+	"math/rand"
 	"os"
 	"path"
 )
 
 var _ provider.InstanceGroup = (*InstanceGroup)(nil)
+
+var charset = []byte("abcdefghijklmnopqrstuvwxyz")
+
+func randomString(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		// randomly select 1 character from given charset
+		b[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(b)
+}
 
 type InstanceGroup struct {
 	FolderId           string `json:"folder_id"`
@@ -90,7 +102,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: iTemplate.Zone})
 
 	instanceGroupTemplate := &instancegroup.InstanceTemplate{
-		Name:       "fleeting-runner-{instance.index}",
+		Name:       g.Name + "-runner-" + randomString(7) + "{instance.index}",
 		PlatformId: iTemplate.Platform,
 		ResourcesSpec: &instancegroup.ResourcesSpec{
 			Cores:        iTemplate.Resources.CPU,
@@ -156,6 +168,24 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 		instanceGroupId := response.ProtoReflect().Get(proto.Descriptor().Fields().ByName("id"))
 
 		g.InstanceGroupId = instanceGroupId.String()
+	} else {
+		// Update metadata for exist instance group
+		// Change ssh-key
+		UpdateInstanceReq := instancegroup.UpdateInstanceGroupRequest{
+			InstanceGroupId:  g.InstanceGroupId,
+			InstanceTemplate: &instancegroup.InstanceTemplate{Metadata: map[string]string{"ssh-keys": g.settings.Username + ":" + g.SshPublicKey}},
+			UpdateMask:       &fieldmaskpb.FieldMask{Paths: []string{"instance_template.metadata"}},
+		}
+		op, err := sdk.WrapOperation(g.ycsdk.InstanceGroup().InstanceGroup().Update(ctx, &UpdateInstanceReq))
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = op.Wait(ctx)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	g.ycsdk = sdk
