@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"gitlab.com/gitlab-org/fleeting/fleeting/provider"
 	"golang.org/x/crypto/ssh"
+	"log"
 )
 
 type PrivPub interface {
@@ -31,6 +32,7 @@ func (g *InstanceGroup) ssh(info *provider.ConnectInfo) error {
 			return fmt.Errorf("key doesn't export PublicKey()")
 		}
 	} else {
+		log.Println("Generate new private key")
 		key, err = rsa.GenerateKey(rand.Reader, 4096)
 		if err != nil {
 			return fmt.Errorf("generating private key: %w", err)
@@ -40,6 +42,7 @@ func (g *InstanceGroup) ssh(info *provider.ConnectInfo) error {
 			Type:  "RSA PRIVATE KEY",
 			Bytes: privDER,
 		}
+
 		g.settings.Key = pem.EncodeToMemory(&privPEM)
 
 	}
