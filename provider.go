@@ -102,7 +102,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: iTemplate.Zone})
 
 	instanceGroupTemplate := &instancegroup.InstanceTemplate{
-		Name:       g.Name + "-runner-" + randomString(7) + "{instance.index}",
+		Name:       g.Name + "-runner-" + randomString(7) + "-" + "{instance.index}",
 		PlatformId: iTemplate.Platform,
 		ResourcesSpec: &instancegroup.ResourcesSpec{
 			Cores:        iTemplate.Resources.CPU,
@@ -169,27 +169,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 
 		g.InstanceGroupId = instanceGroupId.String()
 	} else {
-		// Update metadata for exist instance group
-		// Change ssh-key
-		log.Println("Update IG", g.InstanceGroupId)
-		var updadteMaskPath []string
-
-		updadteMaskPath = append(updadteMaskPath, "instance_template.metadata")
-		updadteMaskPath = append(updadteMaskPath, "scale_policy")
-
-		UpdateInstanceReq := instancegroup.UpdateInstanceGroupRequest{
-			InstanceGroupId:  g.InstanceGroupId,
-			InstanceTemplate: &instancegroup.InstanceTemplate{Metadata: map[string]string{"ssh-keys": g.settings.Username + ":" + g.SshPublicKey}},
-			ScalePolicy:      &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: 0}}},
-			UpdateMask:       &fieldmaskpb.FieldMask{Paths: updadteMaskPath},
-		}
-
-		_, err := sdk.InstanceGroup().InstanceGroup().Update(ctx, &UpdateInstanceReq)
-
-		if err != nil {
-			log.Fatal("Request for update error", err)
-		}
-		g.size = 0
+		log.Println("Use exist IG", g.InstanceGroupId)
 	}
 
 	g.ycsdk = sdk
@@ -197,7 +177,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	return provider.ProviderInfo{
 		ID:      path.Join("yc", g.FolderId, g.Name),
 		MaxSize: 100,
-		Version: "0.0.1",
+		Version: "1.0.5",
 	}, nil
 
 }
@@ -207,6 +187,11 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 		&instancegroup.ListInstanceGroupInstancesRequest{
 			InstanceGroupId: g.InstanceGroupId,
 		})
+
+	if err != nil {
+		return err
+	}
+
 	for _, instance := range instances.Instances {
 		var state provider.State
 
@@ -218,25 +203,26 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 		case "RUNNING_ACTUAL":
 			state = provider.StateRunning
 		default:
-			continue
+			state = provider.StateCreating
 		}
 		update(instance.Id, state)
-	}
-
-	if err != nil {
-		return err
 	}
 
 	return nil
 }
 
 func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int, err error) {
+	var updateMaskPath []string
 
+	updateMaskPath = append(updateMaskPath, "instance_template.metadata")
+	updateMaskPath = append(updateMaskPath, "scale_policy")
 	newSizeInstanceGroup := g.size + int64(delta)
+
 	increaseInstanceReq := instancegroup.UpdateInstanceGroupRequest{
-		InstanceGroupId: g.InstanceGroupId,
-		ScalePolicy:     &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: newSizeInstanceGroup}}},
-		UpdateMask:      &fieldmaskpb.FieldMask{Paths: []string{"scale_policy"}},
+		InstanceGroupId:  g.InstanceGroupId,
+		InstanceTemplate: &instancegroup.InstanceTemplate{Metadata: map[string]string{"ssh-keys": g.settings.Username + ":" + g.SshPublicKey}},
+		ScalePolicy:      &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: newSizeInstanceGroup}}},
+		UpdateMask:       &fieldmaskpb.FieldMask{Paths: updateMaskPath},
 	}
 
 	op, err := g.ycsdk.WrapOperation(g.ycsdk.InstanceGroup().InstanceGroup().Update(ctx, &increaseInstanceReq))
@@ -307,6 +293,25 @@ func (g *InstanceGroup) ConnectInfo(ctx context.Context, instanceId string) (pro
 }
 
 func (g *InstanceGroup) Shutdown(ctx context.Context) error {
-	//TODO implement me
+
+	increaseInstanceReq := instancegroup.UpdateInstanceGroupRequest{
+		InstanceGroupId: g.InstanceGroupId,
+		ScalePolicy:     &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: 0}}},
+		UpdateMask:      &fieldmaskpb.FieldMask{Paths: []string{"scale_policy"}},
+	}
+
+	op, err := g.ycsdk.WrapOperation(g.ycsdk.InstanceGroup().InstanceGroup().Update(ctx, &increaseInstanceReq))
+
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	err = op.Wait(ctx)
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
 	return nil
 }
