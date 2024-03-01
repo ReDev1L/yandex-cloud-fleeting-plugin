@@ -147,7 +147,6 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	for _, ig := range instanceGroupListResp.InstanceGroups {
 		if ig.Name == g.Name {
 			g.InstanceGroupId = ig.Id
-			g.size = ig.ScalePolicy.GetFixedScale().Size
 		}
 	}
 
@@ -169,7 +168,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 
 		g.InstanceGroupId = instanceGroupId.String()
 	} else {
-		log.Println("Use exist IG", g.InstanceGroupId)
+		log.Println("Use exist IG", g.InstanceGroupId, "current size ", g.size)
 	}
 
 	g.ycsdk = sdk
@@ -177,7 +176,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	return provider.ProviderInfo{
 		ID:      path.Join("yc", g.FolderId, g.Name),
 		MaxSize: 100,
-		Version: "1.0.5",
+		Version: "1.0.6",
 	}, nil
 
 }
@@ -193,17 +192,17 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 	}
 
 	for _, instance := range instances.Instances {
-		var state provider.State
+		state := provider.StateCreating
 
 		switch instance.Status.String() {
 		case "PREPARING_RESOURCES", "CREATING_INSTANCE", "STARTING_INSTANCE":
 			state = provider.StateCreating
-		case "DELETING_INSTANCE", "STOPPING_INSTANCE", "DELETED":
+		case "DELETING_INSTANCE", "STOPPING_INSTANCE":
 			state = provider.StateDeleting
+		case "DELETED":
+			state = provider.StateDeleted
 		case "RUNNING_ACTUAL":
 			state = provider.StateRunning
-		default:
-			state = provider.StateCreating
 		}
 		update(instance.Id, state)
 	}
@@ -213,7 +212,7 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 
 func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int, err error) {
 	var updateMaskPath []string
-
+	log.Println("Increase ", delta, " current IG size", g.size)
 	updateMaskPath = append(updateMaskPath, "instance_template.metadata")
 	updateMaskPath = append(updateMaskPath, "scale_policy")
 	newSizeInstanceGroup := g.size + int64(delta)
@@ -228,13 +227,13 @@ func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int,
 	op, err := g.ycsdk.WrapOperation(g.ycsdk.InstanceGroup().InstanceGroup().Update(ctx, &increaseInstanceReq))
 
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		return 0, err
 	}
 
 	err = op.Wait(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Println(err)
 		return 0, err
 	}
 
@@ -261,8 +260,12 @@ func (g *InstanceGroup) Decrease(ctx context.Context, instances []string) (succe
 		log.Println(err)
 		return nil, err
 	}
-
+	log.Println("Decrease ", len(instances), "current IG size", g.size)
 	g.size = g.size - int64(len(instances))
+	if g.size < 0 {
+		g.size = 0
+	}
+	log.Println("Decrease ", len(instances), "new IG size", g.size)
 	return instances, err
 
 }
