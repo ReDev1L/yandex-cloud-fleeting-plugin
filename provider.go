@@ -54,7 +54,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	}
 
 	g.settings = settings
-
+	log.Println("Running with settings: ", g.settings)
 	pemBytes, err := os.ReadFile(g.SshPrivateKeyFile)
 
 	if err != nil {
@@ -193,7 +193,7 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 
 	for _, instance := range instances.Instances {
 		state := provider.StateCreating
-
+		log.Println("Update instance: ", instance.Name, "current state: ", instance.Status.String())
 		switch instance.Status.String() {
 		case "PREPARING_RESOURCES", "CREATING_INSTANCE", "STARTING_INSTANCE":
 			state = provider.StateCreating
@@ -212,7 +212,7 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 
 func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int, err error) {
 	var updateMaskPath []string
-	log.Println("Increase ", delta, " current IG size", g.size)
+	log.Println("Increase on ", delta, " current IG size", g.size)
 	updateMaskPath = append(updateMaskPath, "instance_template.metadata")
 	updateMaskPath = append(updateMaskPath, "scale_policy")
 	newSizeInstanceGroup := g.size + int64(delta)
@@ -238,7 +238,7 @@ func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int,
 	}
 
 	g.size = newSizeInstanceGroup
-
+	log.Println("Increased IG new size: ", g.size)
 	return delta, nil
 }
 
@@ -260,12 +260,12 @@ func (g *InstanceGroup) Decrease(ctx context.Context, instances []string) (succe
 		log.Println(err)
 		return nil, err
 	}
-	log.Println("Decrease ", len(instances), "current IG size", g.size)
+	log.Println("Decrease on", len(instances), "current IG size", g.size)
 	g.size = g.size - int64(len(instances))
 	if g.size < 0 {
 		g.size = 0
 	}
-	log.Println("Decrease ", len(instances), "new IG size", g.size)
+	log.Println("Decreased new IG size", g.size)
 	return instances, err
 
 }
@@ -291,7 +291,7 @@ func (g *InstanceGroup) ConnectInfo(ctx context.Context, instanceId string) (pro
 			info.ExternalAddr = ipAddress.OneToOneNat.GetAddress()
 		}
 	}
-
+	log.Println("Connecting to instance ", instanceId, "with IP address: ", info.ExternalAddr, info.InternalAddr)
 	return info, nil
 }
 
