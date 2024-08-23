@@ -89,6 +89,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 		NetworkId:            iTemplate.Network.Network,
 		SubnetIds:            []string{iTemplate.Network.Subnet},
 		PrimaryV4AddressSpec: &instancegroup.PrimaryAddressSpec{},
+		SecurityGroupIds:     []string{iTemplate.Network.Security},
 	}
 
 	if iTemplate.Network.Nat {
