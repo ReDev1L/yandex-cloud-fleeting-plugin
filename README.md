@@ -34,6 +34,7 @@ disk:
 network:
   network: ""
   subnet: ""
+  security: ""
   nat: true
 
 ```

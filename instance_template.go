@@ -16,8 +16,9 @@ type InstanceTemplate struct {
 		Image string `yaml:"image,omitempty"`
 	} `yaml:"disk"`
 	Network struct {
-		Network string `yaml:"network,omitempty"`
-		Subnet  string `yaml:"subnet,omitempty"`
-		Nat     bool   `yaml:"nat,omitempty"`
+		Network  string `yaml:"network,omitempty"`
+		Subnet   string `yaml:"subnet,omitempty"`
+		Nat      bool   `yaml:"nat,omitempty"`
+		Security string `yaml:"security,omitempty"`
 	} `yaml:"network"`
 }
