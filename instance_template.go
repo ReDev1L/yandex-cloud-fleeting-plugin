@@ -1,11 +1,12 @@
 package fleeting_plugin_yc
 
 type InstanceTemplate struct {
-	Platform       string `yaml:"platform"`
-	Preemptible    bool   `yaml:"preemptible"`
-	Zone           string `yaml:"zone"`
-	ServiceAccount string `yaml:"serviceAccount"`
-	Resources      struct {
+	Platform         string `yaml:"platform"`
+	Preemptible      bool   `yaml:"preemptible"`
+	Zone             string `yaml:"zone"`
+	ServiceAccount   string `yaml:"serviceAccount"`
+	VmServiceAccount string `yaml:"vmServiceAccount,omitempty"`
+	Resources        struct {
 		CPU      int64 `yaml:"cpu,omitempty"`
 		Memory   int64 `yaml:"memory,omitempty"`
 		Fraction int64 `yaml:"fraction,omitempty"`
@@ -21,4 +22,7 @@ type InstanceTemplate struct {
 		Nat      bool   `yaml:"nat,omitempty"`
 		Security string `yaml:"security,omitempty"`
 	} `yaml:"network"`
+	Monitoring struct {
+		Enabled bool `yaml:"enabled,omitempty"`
+	} `yaml:"monitoring, omitempty"`
 }

@@ -20,6 +20,7 @@ platform: "standard-v3"
 zone: "ru-central1-a"
 preemptible: true
 serviceAccount: ""
+vmServiceAccount: ""
 
 resources:
   cpu: 2
@@ -36,7 +37,8 @@ network:
   subnet: ""
   security: ""
   nat: true
-
+monitoring:
+  enabled: false
 ```
 
 **serviceAccount** must have compute.admin, vpc.admin

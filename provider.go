@@ -3,16 +3,17 @@ package fleeting_plugin_yc
 import (
 	"context"
 	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"path"
+
 	"github.com/ghodss/yaml"
 	"github.com/hashicorp/go-hclog"
 	"github.com/yandex-cloud/go-genproto/yandex/cloud/compute/v1/instancegroup"
 	ycsdk "github.com/yandex-cloud/go-sdk"
 	"gitlab.com/gitlab-org/fleeting/fleeting/provider"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
-	"log"
-	"math/rand"
-	"os"
-	"path"
 )
 
 var _ provider.InstanceGroup = (*InstanceGroup)(nil)
@@ -32,7 +33,7 @@ type InstanceGroup struct {
 	FolderId           string `json:"folder_id"`
 	Name               string `json:"name"`
 	ConfigInstanceFile string `json:"config_file"`
-	SshPrivateKeyFile  string `json:"ssh_file"`
+	SshPrivateKeyFile  string `json:"ssh_file,omitempty"`
 
 	SshPublicKey    string
 	InstanceGroupId string
@@ -41,7 +42,140 @@ type InstanceGroup struct {
 	ycsdk    *ycsdk.SDK
 	settings provider.Settings
 
+	template InstanceTemplate
+
 	logger hclog.Logger
+}
+
+func (g *InstanceGroup) GenerateInstanceGroup() *instancegroup.InstanceTemplate {
+	instanceGroupTemplateNetwork := &instancegroup.NetworkInterfaceSpec{
+		NetworkId:            g.template.Network.Network,
+		SubnetIds:            []string{g.template.Network.Subnet},
+		PrimaryV4AddressSpec: &instancegroup.PrimaryAddressSpec{},
+	}
+
+	if g.template.Network.Nat {
+		instanceGroupTemplateNetwork.PrimaryV4AddressSpec = &instancegroup.PrimaryAddressSpec{OneToOneNatSpec: &instancegroup.OneToOneNatSpec{IpVersion: instancegroup.IpVersion_IPV4}}
+	}
+
+	if len(g.template.Network.Security) > 0 {
+		instanceGroupTemplateNetwork.SecurityGroupIds = []string{g.template.Network.Security}
+	}
+
+	var listInstanceGroupTemplateNetwork []*instancegroup.NetworkInterfaceSpec
+
+	listInstanceGroupTemplateNetwork = append(listInstanceGroupTemplateNetwork, instanceGroupTemplateNetwork)
+
+	instanceGroupTemplate := &instancegroup.InstanceTemplate{
+		Name:       g.Name + "-runner-" + randomString(7) + "-" + "{instance.index}",
+		Labels:     g.GenerateLabels(),
+		PlatformId: g.template.Platform,
+		ResourcesSpec: &instancegroup.ResourcesSpec{
+			Cores:        g.template.Resources.CPU,
+			Memory:       g.template.Resources.Memory,
+			CoreFraction: g.template.Resources.Fraction,
+		},
+		BootDiskSpec: &instancegroup.AttachedDiskSpec{
+			Mode: instancegroup.AttachedDiskSpec_READ_WRITE,
+			DiskSpec: &instancegroup.AttachedDiskSpec_DiskSpec{
+				Size:   g.template.Disk.Size,
+				TypeId: g.template.Disk.Type,
+				SourceOneof: &instancegroup.AttachedDiskSpec_DiskSpec_ImageId{
+					ImageId: g.template.Disk.Image,
+				},
+			},
+		},
+		NetworkInterfaceSpecs: listInstanceGroupTemplateNetwork,
+		SchedulingPolicy:      &instancegroup.SchedulingPolicy{Preemptible: true},
+		Metadata:              g.GenerateMeta(),
+	}
+
+	if g.template.VmServiceAccount != "" {
+		instanceGroupTemplate.ServiceAccountId = g.template.VmServiceAccount
+	}
+
+	return instanceGroupTemplate
+}
+
+func (g *InstanceGroup) GenerateInstanceGroupRequest() *instancegroup.CreateInstanceGroupRequest {
+
+	instanceTemplate := g.GenerateInstanceGroup()
+	var instanceGroupTemplateZone []*instancegroup.AllocationPolicy_Zone
+	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: g.template.Zone})
+	instanceGroupCreateReq := &instancegroup.CreateInstanceGroupRequest{
+		FolderId:         g.FolderId,
+		Name:             g.Name,
+		InstanceTemplate: instanceTemplate,
+		ScalePolicy:      &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: 0}}},
+		DeployPolicy: &instancegroup.DeployPolicy{
+			MaxCreating:    3,
+			MaxUnavailable: 1,
+			MaxDeleting:    1,
+		},
+		AllocationPolicy: &instancegroup.AllocationPolicy{Zones: instanceGroupTemplateZone},
+		ServiceAccountId: g.template.ServiceAccount,
+	}
+
+	return instanceGroupCreateReq
+}
+
+func (g *InstanceGroup) GenerateUpdateInstanceGroupRequest() *instancegroup.UpdateInstanceGroupRequest {
+	instanceTemplate := g.GenerateInstanceGroup()
+	var instanceGroupTemplateZone []*instancegroup.AllocationPolicy_Zone
+	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: g.template.Zone})
+	instanceGroupCreateReq := &instancegroup.UpdateInstanceGroupRequest{
+		InstanceGroupId:  g.InstanceGroupId,
+		Name:             g.Name,
+		InstanceTemplate: instanceTemplate,
+		ScalePolicy:      &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: 0}}},
+		DeployPolicy: &instancegroup.DeployPolicy{
+			MaxCreating:    3,
+			MaxUnavailable: 1,
+			MaxDeleting:    1,
+		},
+		AllocationPolicy: &instancegroup.AllocationPolicy{Zones: instanceGroupTemplateZone},
+		ServiceAccountId: g.template.ServiceAccount,
+	}
+
+	return instanceGroupCreateReq
+
+}
+
+func (g *InstanceGroup) GenerateMeta() map[string]string {
+	var iTemplate InstanceTemplate
+
+	metaData := make(map[string]string)
+
+	metaData["ssh-keys"] = g.settings.Username + ":" + g.SshPublicKey
+
+	ymlData, err := os.ReadFile(g.ConfigInstanceFile)
+
+	if err != nil {
+		return metaData
+	}
+
+	err = yaml.Unmarshal(ymlData, &iTemplate)
+
+	if err != nil {
+		return metaData
+	}
+
+	if iTemplate.Monitoring.Enabled {
+		metaData["install-unified-agent"] = "1"
+		metaData["user-data"] = "#cloud-config\nruncmd:\n  - wget -O - https://monitoring.api.cloud.yandex.net/monitoring/v2/unifiedAgent/config/install.sh | bash"
+	}
+
+	return metaData
+}
+
+func (g *InstanceGroup) GenerateLabels() map[string]string {
+
+	labels := make(map[string]string)
+
+	labels["fleet-runner"] = "true"
+	labels["fleet-runner-name"] = g.Name
+
+	return labels
 }
 
 func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings provider.Settings) (provider.ProviderInfo, error) {
@@ -61,6 +195,21 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 		log.Println("Not set private SSH file")
 	}
 
+	var iTemplate InstanceTemplate
+	ymlData, err := os.ReadFile(g.ConfigInstanceFile)
+
+	if err != nil {
+		log.Fatal("Error in get Template ", err)
+	}
+
+	err = yaml.Unmarshal(ymlData, &iTemplate)
+
+	if err != nil {
+		log.Fatal("Error in get Template ", err)
+	}
+
+	g.template = iTemplate
+
 	g.settings.Key = pemBytes
 	g.size = 0
 
@@ -70,73 +219,6 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 
 	if err != nil {
 		return provider.ProviderInfo{}, err
-	}
-
-	var iTemplate InstanceTemplate
-	ymlData, err := os.ReadFile(g.ConfigInstanceFile)
-
-	if err != nil {
-		return provider.ProviderInfo{}, err
-	}
-
-	err = yaml.Unmarshal(ymlData, &iTemplate)
-
-	if err != nil {
-		return provider.ProviderInfo{}, err
-	}
-
-	instanceGroupTemplateNetwork := &instancegroup.NetworkInterfaceSpec{
-		NetworkId:            iTemplate.Network.Network,
-		SubnetIds:            []string{iTemplate.Network.Subnet},
-		PrimaryV4AddressSpec: &instancegroup.PrimaryAddressSpec{},
-		SecurityGroupIds:     []string{iTemplate.Network.Security},
-	}
-
-	if iTemplate.Network.Nat {
-		instanceGroupTemplateNetwork.PrimaryV4AddressSpec = &instancegroup.PrimaryAddressSpec{OneToOneNatSpec: &instancegroup.OneToOneNatSpec{IpVersion: instancegroup.IpVersion_IPV4}}
-	}
-
-	var listInstanceGroupTemplateNetwork []*instancegroup.NetworkInterfaceSpec
-	var instanceGroupTemplateZone []*instancegroup.AllocationPolicy_Zone
-
-	listInstanceGroupTemplateNetwork = append(listInstanceGroupTemplateNetwork, instanceGroupTemplateNetwork)
-	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: iTemplate.Zone})
-
-	instanceGroupTemplate := &instancegroup.InstanceTemplate{
-		Name:       g.Name + "-runner-" + randomString(7) + "-" + "{instance.index}",
-		PlatformId: iTemplate.Platform,
-		ResourcesSpec: &instancegroup.ResourcesSpec{
-			Cores:        iTemplate.Resources.CPU,
-			Memory:       iTemplate.Resources.Memory,
-			CoreFraction: iTemplate.Resources.Fraction,
-		},
-		BootDiskSpec: &instancegroup.AttachedDiskSpec{
-			Mode: instancegroup.AttachedDiskSpec_READ_WRITE,
-			DiskSpec: &instancegroup.AttachedDiskSpec_DiskSpec{
-				Size:   iTemplate.Disk.Size,
-				TypeId: iTemplate.Disk.Type,
-				SourceOneof: &instancegroup.AttachedDiskSpec_DiskSpec_ImageId{
-					ImageId: iTemplate.Disk.Image,
-				},
-			},
-		},
-		NetworkInterfaceSpecs: listInstanceGroupTemplateNetwork,
-		SchedulingPolicy:      &instancegroup.SchedulingPolicy{Preemptible: true},
-		Metadata:              map[string]string{"ssh-keys": g.settings.Username + ":" + g.SshPublicKey},
-	}
-
-	instanceGroupCreateReq := &instancegroup.CreateInstanceGroupRequest{
-		FolderId:         g.FolderId,
-		Name:             g.Name,
-		InstanceTemplate: instanceGroupTemplate,
-		ScalePolicy:      &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: 0}}},
-		DeployPolicy: &instancegroup.DeployPolicy{
-			MaxCreating:    3,
-			MaxUnavailable: 1,
-			MaxDeleting:    1,
-		},
-		AllocationPolicy: &instancegroup.AllocationPolicy{Zones: instanceGroupTemplateZone},
-		ServiceAccountId: iTemplate.ServiceAccount,
 	}
 
 	instanceGroupListResp, err := sdk.InstanceGroup().InstanceGroup().List(ctx, &instancegroup.ListInstanceGroupsRequest{FolderId: g.FolderId})
@@ -152,7 +234,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	}
 
 	if len(g.InstanceGroupId) < 1 {
-		op, err := sdk.WrapOperation(sdk.InstanceGroup().InstanceGroup().Create(ctx, instanceGroupCreateReq))
+		op, err := sdk.WrapOperation(sdk.InstanceGroup().InstanceGroup().Create(ctx, g.GenerateInstanceGroupRequest()))
 
 		if err != nil {
 			log.Fatal("Creating instance group ", err)
@@ -169,7 +251,17 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 
 		g.InstanceGroupId = instanceGroupId.String()
 	} else {
-		log.Println("Use exist IG", g.InstanceGroupId, "current size ", g.size)
+		log.Println("Use exist IG with ID", g.InstanceGroupId, "name", g.Name, "current size", g.size)
+		op, err := sdk.WrapOperation(sdk.InstanceGroup().InstanceGroup().Update(ctx, g.GenerateUpdateInstanceGroupRequest()))
+		log.Println("IG updated", g.InstanceGroupId, g.Name)
+		if err != nil {
+			log.Fatal("Updating instance group failed", err)
+		}
+
+		err = op.Wait(ctx)
+		if err != nil {
+			log.Fatal("Updated instance group failed", err)
+		}
 	}
 
 	g.ycsdk = sdk
@@ -177,7 +269,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	return provider.ProviderInfo{
 		ID:      path.Join("yc", g.FolderId, g.Name),
 		MaxSize: 100,
-		Version: "1.0.6",
+		Version: "1.1.0",
 	}, nil
 
 }
@@ -194,7 +286,6 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 
 	for _, instance := range instances.Instances {
 		state := provider.StateCreating
-		log.Println("Update instance: ", instance.Name, "current state: ", instance.Status.String())
 		switch instance.Status.String() {
 		case "PREPARING_RESOURCES", "CREATING_INSTANCE", "STARTING_INSTANCE":
 			state = provider.StateCreating
@@ -220,7 +311,7 @@ func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int,
 
 	increaseInstanceReq := instancegroup.UpdateInstanceGroupRequest{
 		InstanceGroupId:  g.InstanceGroupId,
-		InstanceTemplate: &instancegroup.InstanceTemplate{Metadata: map[string]string{"ssh-keys": g.settings.Username + ":" + g.SshPublicKey}},
+		InstanceTemplate: &instancegroup.InstanceTemplate{Metadata: g.GenerateMeta()},
 		ScalePolicy:      &instancegroup.ScalePolicy{ScaleType: &instancegroup.ScalePolicy_FixedScale_{FixedScale: &instancegroup.ScalePolicy_FixedScale{Size: newSizeInstanceGroup}}},
 		UpdateMask:       &fieldmaskpb.FieldMask{Paths: updateMaskPath},
 	}
