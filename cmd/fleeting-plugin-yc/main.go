@@ -2,7 +2,7 @@ package main
 
 import (
 	"gitlab.com/gitlab-org/fleeting/fleeting/plugin"
-	ycplugin "gitlab.com/k.mukhin/fleeting-plugin-yc"
+	ycplugin "github.com/myplixa/yandex-cloud-fleeting-plugin"
 )
 
 func main() {

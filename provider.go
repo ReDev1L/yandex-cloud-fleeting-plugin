@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"os"
 	"path"
+	"sync"
+	"text/template"
 
 	"github.com/ghodss/yaml"
 	"github.com/hashicorp/go-hclog"
@@ -43,6 +45,17 @@ type InstanceGroup struct {
 	settings provider.Settings
 
 	template InstanceTemplate
+
+	// nameToID caches ManagedInstance.Name -> ManagedInstance.Id. GitLab
+	// Runner/taskscaler tracks instances by whatever Update() reports as
+	// their id; we report the human-readable Name (so CI logs/monitoring
+	// show something meaningful instead of a raw UUID), but the YC API
+	// itself (DeleteInstancesRequest) requires the real managed-instance
+	// Id - this map bridges the two, same pattern as the OpenStack fork's
+	// resolveInstanceID.
+	nameToID sync.Map
+
+	cloudInitExtraTemplate *template.Template
 
 	logger hclog.Logger
 }
@@ -86,7 +99,7 @@ func (g *InstanceGroup) GenerateInstanceGroup() *instancegroup.InstanceTemplate 
 			},
 		},
 		NetworkInterfaceSpecs: listInstanceGroupTemplateNetwork,
-		SchedulingPolicy:      &instancegroup.SchedulingPolicy{Preemptible: true},
+		SchedulingPolicy:      &instancegroup.SchedulingPolicy{Preemptible: g.template.Preemptible},
 		Metadata:              g.GenerateMeta(),
 	}
 
@@ -142,27 +155,39 @@ func (g *InstanceGroup) GenerateUpdateInstanceGroupRequest() *instancegroup.Upda
 }
 
 func (g *InstanceGroup) GenerateMeta() map[string]string {
-	var iTemplate InstanceTemplate
-
 	metaData := make(map[string]string)
 
 	metaData["ssh-keys"] = g.settings.Username + ":" + g.SshPublicKey
 
-	ymlData, err := os.ReadFile(g.ConfigInstanceFile)
+	var parts []string
 
-	if err != nil {
-		return metaData
-	}
-
-	err = yaml.Unmarshal(ymlData, &iTemplate)
-
-	if err != nil {
-		return metaData
-	}
-
-	if iTemplate.Monitoring.Enabled {
+	if g.template.Monitoring.Enabled {
 		metaData["install-unified-agent"] = "1"
-		metaData["user-data"] = "#cloud-config\nruncmd:\n  - wget -O - https://monitoring.api.cloud.yandex.net/monitoring/v2/unifiedAgent/config/install.sh | bash"
+		parts = append(parts, "#cloud-config\nruncmd:\n  - wget -O - https://monitoring.api.cloud.yandex.net/monitoring/v2/unifiedAgent/config/install.sh | bash\n")
+	}
+
+	if g.cloudInitExtraTemplate != nil {
+		extra, err := renderCloudInitExtra(g.cloudInitExtraTemplate, g.Name, g.template.CloudInitVars)
+		if err != nil {
+			g.logger.Error("rendering cloud_init_extra_file failed, skipping it for this metadata generation", "error", err)
+		} else {
+			parts = append(parts, extra)
+		}
+	}
+
+	switch len(parts) {
+	case 0:
+		// no extra user-data to set
+	case 1:
+		metaData["user-data"] = parts[0]
+	default:
+		combined, err := buildMultipartUserData(parts...)
+		if err != nil {
+			g.logger.Error("assembling multipart cloud-init user data failed, falling back to first part only", "error", err)
+			metaData["user-data"] = parts[0]
+		} else {
+			metaData["user-data"] = combined
+		}
 	}
 
 	return metaData
@@ -179,12 +204,14 @@ func (g *InstanceGroup) GenerateLabels() map[string]string {
 }
 
 func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings provider.Settings) (provider.ProviderInfo, error) {
+	g.logger = logger
+
 	sdk, err := ycsdk.Build(ctx, ycsdk.Config{
 		Credentials: ycsdk.InstanceServiceAccount(),
 	})
 
 	if err != nil {
-		log.Fatal(err)
+		return provider.ProviderInfo{}, fmt.Errorf("building YC SDK client: %w", err)
 	}
 
 	g.settings = settings
@@ -199,16 +226,24 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	ymlData, err := os.ReadFile(g.ConfigInstanceFile)
 
 	if err != nil {
-		log.Fatal("Error in get Template ", err)
+		return provider.ProviderInfo{}, fmt.Errorf("reading config_file %q: %w", g.ConfigInstanceFile, err)
 	}
 
 	err = yaml.Unmarshal(ymlData, &iTemplate)
 
 	if err != nil {
-		log.Fatal("Error in get Template ", err)
+		return provider.ProviderInfo{}, fmt.Errorf("parsing config_file %q: %w", g.ConfigInstanceFile, err)
 	}
 
 	g.template = iTemplate
+
+	if iTemplate.CloudInitExtraFile != "" {
+		tmpl, err := loadCloudInitExtraTemplate(iTemplate.CloudInitExtraFile)
+		if err != nil {
+			return provider.ProviderInfo{}, fmt.Errorf("loading cloud_init_extra_file: %w", err)
+		}
+		g.cloudInitExtraTemplate = tmpl
+	}
 
 	g.settings.Key = pemBytes
 	g.size = 0
@@ -224,7 +259,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	instanceGroupListResp, err := sdk.InstanceGroup().InstanceGroup().List(ctx, &instancegroup.ListInstanceGroupsRequest{FolderId: g.FolderId})
 
 	if err != nil {
-		log.Fatal("Error in get Instance group ", err)
+		return provider.ProviderInfo{}, fmt.Errorf("listing instance groups: %w", err)
 	}
 
 	for _, ig := range instanceGroupListResp.InstanceGroups {
@@ -237,12 +272,12 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 		op, err := sdk.WrapOperation(sdk.InstanceGroup().InstanceGroup().Create(ctx, g.GenerateInstanceGroupRequest()))
 
 		if err != nil {
-			log.Fatal("Creating instance group ", err)
+			return provider.ProviderInfo{}, fmt.Errorf("creating instance group: %w", err)
 		}
 
 		err = op.Wait(ctx)
 		if err != nil {
-			log.Fatal("Created instance group ", err)
+			return provider.ProviderInfo{}, fmt.Errorf("waiting for instance group creation: %w", err)
 		}
 
 		response, _ := op.Response()
@@ -255,12 +290,12 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 		op, err := sdk.WrapOperation(sdk.InstanceGroup().InstanceGroup().Update(ctx, g.GenerateUpdateInstanceGroupRequest()))
 		log.Println("IG updated", g.InstanceGroupId, g.Name)
 		if err != nil {
-			log.Fatal("Updating instance group failed", err)
+			return provider.ProviderInfo{}, fmt.Errorf("updating instance group: %w", err)
 		}
 
 		err = op.Wait(ctx)
 		if err != nil {
-			log.Fatal("Updated instance group failed", err)
+			return provider.ProviderInfo{}, fmt.Errorf("waiting for instance group update: %w", err)
 		}
 	}
 
@@ -296,10 +331,40 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 		case "RUNNING_ACTUAL":
 			state = provider.StateRunning
 		}
-		update(instance.Id, state)
+		g.nameToID.Store(instance.Name, instance.Id)
+		update(instance.Name, state)
 	}
 
 	return nil
+}
+
+// resolveInstanceID resolves a managed instance Name (the id GitLab
+// Runner/taskscaler tracks, see Update()) back to its real YC
+// managed-instance Id, which DeleteInstancesRequest/ConnectInfo need. Falls
+// back to a live ListInstances call if the name isn't cached yet - e.g.
+// right after Increase() on a plugin instance that hasn't run an Update()
+// poll since.
+func (g *InstanceGroup) resolveInstanceID(ctx context.Context, name string) (string, error) {
+	if id, ok := g.nameToID.Load(name); ok {
+		return id.(string), nil
+	}
+
+	instances, err := g.ycsdk.InstanceGroup().InstanceGroup().ListInstances(ctx,
+		&instancegroup.ListInstanceGroupInstancesRequest{
+			InstanceGroupId: g.InstanceGroupId,
+		})
+	if err != nil {
+		return "", fmt.Errorf("resolving instance id for %q: %w", name, err)
+	}
+
+	for _, instance := range instances.Instances {
+		g.nameToID.Store(instance.Name, instance.Id)
+		if instance.Name == name {
+			return instance.Id, nil
+		}
+	}
+
+	return "", fmt.Errorf("no instance found with name %q", name)
 }
 
 func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int, err error) {
@@ -336,9 +401,23 @@ func (g *InstanceGroup) Increase(ctx context.Context, delta int) (succeeded int,
 
 func (g *InstanceGroup) Decrease(ctx context.Context, instances []string) (succeeded []string, err error) {
 
+	managedIDs := make([]string, 0, len(instances))
+	for _, name := range instances {
+		id, resolveErr := g.resolveInstanceID(ctx, name)
+		if resolveErr != nil {
+			log.Println("Decrease: skipping instance, could not resolve id:", resolveErr)
+			continue
+		}
+		managedIDs = append(managedIDs, id)
+	}
+
+	if len(managedIDs) == 0 {
+		return nil, fmt.Errorf("could not resolve any of the requested instances to a managed-instance id: %v", instances)
+	}
+
 	instanceGroupDeleteReq := instancegroup.DeleteInstancesRequest{
 		InstanceGroupId:    g.InstanceGroupId,
-		ManagedInstanceIds: instances,
+		ManagedInstanceIds: managedIDs,
 	}
 
 	op, err := g.ycsdk.WrapOperation(g.ycsdk.InstanceGroup().InstanceGroup().DeleteInstances(ctx, &instanceGroupDeleteReq))
@@ -352,13 +431,16 @@ func (g *InstanceGroup) Decrease(ctx context.Context, instances []string) (succe
 		log.Println(err)
 		return nil, err
 	}
-	log.Println("Decrease on", len(instances), "current IG size", g.size)
-	g.size = g.size - int64(len(instances))
+	for _, name := range instances {
+		g.nameToID.Delete(name)
+	}
+	log.Println("Decrease on", len(managedIDs), "current IG size", g.size)
+	g.size = g.size - int64(len(managedIDs))
 	if g.size < 0 {
 		g.size = 0
 	}
 	log.Println("Decreased new IG size", g.size)
-	return instances, err
+	return instances, nil
 
 }
 
@@ -373,7 +455,8 @@ func (g *InstanceGroup) ConnectInfo(ctx context.Context, instanceId string) (pro
 		return provider.ConnectInfo{}, err
 	}
 	for _, instance := range instances.Instances {
-		if instance.Id == instanceId {
+		if instance.Name == instanceId {
+			g.nameToID.Store(instance.Name, instance.Id)
 			if instance.Status.String() != "RUNNING_ACTUAL" {
 				return provider.ConnectInfo{}, fmt.Errorf("instance status is not running (%s)", instance.Status.String())
 			}

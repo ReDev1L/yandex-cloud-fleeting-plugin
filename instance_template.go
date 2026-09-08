@@ -25,4 +25,16 @@ type InstanceTemplate struct {
 	Monitoring struct {
 		Enabled bool `yaml:"enabled,omitempty"`
 	} `yaml:"monitoring, omitempty"`
+
+	// CloudInitExtraFile is an optional path to a #cloud-config document
+	// (parsed as a Go text/template, see cloud_init.go) merged alongside the
+	// plugin's own generated user-data (e.g. the monitoring-agent installer)
+	// via real cloud-init multipart MIME - lets operators install Docker,
+	// CA certs, etc. without needing to bake a separate custom image per
+	// tweak.
+	CloudInitExtraFile string `yaml:"cloud_init_extra_file,omitempty"`
+	// CloudInitVars are made available to the CloudInitExtraFile template as
+	// {{ .Vars.<key> }} - the place for anything the template needs that
+	// shouldn't be hardcoded into the file itself (e.g. a registry token).
+	CloudInitVars map[string]string `yaml:"cloud_init_vars,omitempty"`
 }

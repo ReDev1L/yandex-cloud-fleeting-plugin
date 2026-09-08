@@ -1,4 +1,4 @@
-module gitlab.com/k.mukhin/fleeting-plugin-yc
+module github.com/myplixa/yandex-cloud-fleeting-plugin
 
 go 1.21
 
