@@ -1,0 +1,28 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: make all
+
+      - run: make checksums
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/fleeting-plugin-yc-*
+            out/release.sha256

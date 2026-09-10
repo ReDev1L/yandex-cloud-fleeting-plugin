@@ -1,8 +1,8 @@
 package main
 
 import (
-	"gitlab.com/gitlab-org/fleeting/fleeting/plugin"
 	ycplugin "github.com/myplixa/yandex-cloud-fleeting-plugin"
+	"gitlab.com/gitlab-org/fleeting/fleeting/plugin"
 )
 
 func main() {

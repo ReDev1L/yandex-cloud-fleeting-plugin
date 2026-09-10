@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"path"
 	"sync"
 	"text/template"
 
 	"github.com/ghodss/yaml"
+	"github.com/google/uuid"
 	"github.com/hashicorp/go-hclog"
 	"github.com/yandex-cloud/go-genproto/yandex/cloud/compute/v1/instancegroup"
 	ycsdk "github.com/yandex-cloud/go-sdk"
@@ -19,17 +19,6 @@ import (
 )
 
 var _ provider.InstanceGroup = (*InstanceGroup)(nil)
-
-var charset = []byte("abcdefghijklmnopqrstuvwxyz")
-
-func randomString(n int) string {
-	b := make([]byte, n)
-	for i := range b {
-		// randomly select 1 character from given charset
-		b[i] = charset[rand.Intn(len(charset))]
-	}
-	return string(b)
-}
 
 type InstanceGroup struct {
 	FolderId           string `json:"folder_id"`
@@ -46,13 +35,7 @@ type InstanceGroup struct {
 
 	template InstanceTemplate
 
-	// nameToID caches ManagedInstance.Name -> ManagedInstance.Id. GitLab
-	// Runner/taskscaler tracks instances by whatever Update() reports as
-	// their id; we report the human-readable Name (so CI logs/monitoring
-	// show something meaningful instead of a raw UUID), but the YC API
-	// itself (DeleteInstancesRequest) requires the real managed-instance
-	// Id - this map bridges the two, same pattern as the OpenStack fork's
-	// resolveInstanceID.
+	// nameToID caches ManagedInstance.Name -> ManagedInstance.Id; see resolveInstanceID.
 	nameToID sync.Map
 
 	cloudInitExtraTemplate *template.Template
@@ -80,7 +63,7 @@ func (g *InstanceGroup) GenerateInstanceGroup() *instancegroup.InstanceTemplate 
 	listInstanceGroupTemplateNetwork = append(listInstanceGroupTemplateNetwork, instanceGroupTemplateNetwork)
 
 	instanceGroupTemplate := &instancegroup.InstanceTemplate{
-		Name:       g.Name + "-runner-" + randomString(7) + "-" + "{instance.index}",
+		Name:       g.Name + "-" + uuid.New().String()[:8] + "-{instance.index}",
 		Labels:     g.GenerateLabels(),
 		PlatformId: g.template.Platform,
 		ResourcesSpec: &instancegroup.ResourcesSpec{
@@ -177,7 +160,6 @@ func (g *InstanceGroup) GenerateMeta() map[string]string {
 
 	switch len(parts) {
 	case 0:
-		// no extra user-data to set
 	case 1:
 		metaData["user-data"] = parts[0]
 	default:
@@ -265,6 +247,7 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	for _, ig := range instanceGroupListResp.InstanceGroups {
 		if ig.Name == g.Name {
 			g.InstanceGroupId = ig.Id
+			g.size = ig.GetManagedInstancesState().GetTargetSize()
 		}
 	}
 
@@ -302,9 +285,10 @@ func (g *InstanceGroup) Init(ctx context.Context, logger hclog.Logger, settings 
 	g.ycsdk = sdk
 
 	return provider.ProviderInfo{
-		ID:      path.Join("yc", g.FolderId, g.Name),
-		MaxSize: 100,
-		Version: "1.1.0",
+		ID:        path.Join("yc", g.FolderId, g.Name),
+		MaxSize:   100,
+		Version:   VERSION,
+		BuildInfo: BuildInfo(),
 	}, nil
 
 }
@@ -338,12 +322,8 @@ func (g *InstanceGroup) Update(ctx context.Context, update func(instance string,
 	return nil
 }
 
-// resolveInstanceID resolves a managed instance Name (the id GitLab
-// Runner/taskscaler tracks, see Update()) back to its real YC
-// managed-instance Id, which DeleteInstancesRequest/ConnectInfo need. Falls
-// back to a live ListInstances call if the name isn't cached yet - e.g.
-// right after Increase() on a plugin instance that hasn't run an Update()
-// poll since.
+// resolveInstanceID resolves a managed instance Name back to its real YC
+// managed-instance Id, falling back to a live ListInstances call on a cache miss.
 func (g *InstanceGroup) resolveInstanceID(ctx context.Context, name string) (string, error) {
 	if id, ok := g.nameToID.Load(name); ok {
 		return id.(string), nil
@@ -468,6 +448,38 @@ func (g *InstanceGroup) ConnectInfo(ctx context.Context, instanceId string) (pro
 	}
 	log.Println("Connecting to instance ", instanceId, "with IP address: ", info.ExternalAddr, info.InternalAddr)
 	return info, nil
+}
+
+func (g *InstanceGroup) Heartbeat(ctx context.Context, instanceID string) error {
+	instances, err := g.ycsdk.InstanceGroup().InstanceGroup().ListInstances(ctx,
+		&instancegroup.ListInstanceGroupInstancesRequest{
+			InstanceGroupId: g.InstanceGroupId,
+		})
+	if err != nil {
+		return fmt.Errorf("heartbeat: listing instances: %w", err)
+	}
+
+	for _, instance := range instances.Instances {
+		if instance.Name != instanceID {
+			continue
+		}
+		if instance.Status.String() != "RUNNING_ACTUAL" {
+			return fmt.Errorf("heartbeat: instance %s status is %s: %w", instanceID, instance.Status.String(), provider.ErrInstanceUnhealthy)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("heartbeat: instance %s not found: %w", instanceID, provider.ErrInstanceUnhealthy)
+}
+
+// Suspend/Resume are unused: ProviderInfo.Capabilities never advertises
+// CapabilitySuspendResume, so taskscaler never calls them.
+func (g *InstanceGroup) Suspend(ctx context.Context, instances []string) (succeeded []string, err error) {
+	return nil, provider.ErrCapabilityNotSupported
+}
+
+func (g *InstanceGroup) Resume(ctx context.Context, instances []string) (succeeded []string, err error) {
+	return nil, provider.ErrCapabilityNotSupported
 }
 
 func (g *InstanceGroup) Shutdown(ctx context.Context) error {

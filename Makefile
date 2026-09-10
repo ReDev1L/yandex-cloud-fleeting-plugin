@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := build
 
-export NAME ?= $(shell basename $(shell pwd))
+export NAME ?= fleeting-plugin-yc
 export VERSION := v$(shell cat VERSION)
 export OUT_PATH ?= out
 export CGO_ENABLED ?= 0
@@ -38,37 +38,19 @@ $(TARGETS): .mods
 			 GOARCH=$(lastword $(subst .exe,,$(subst -, ,$(subst $(OUT_PATH)/$(NAME)-,,$@)))) \
 			 go build -a -ldflags "$(GO_LDFLAGS)" -o $@ ./cmd/$(NAME)/...
 
-MAKEFLAGS += -j$(shell nproc)
 all:$(TARGETS)
 
 .PHONY: test
 test: .mods
 	go test -v -timeout=30m ./...
 
-.PHONY: shellcheck
-shellcheck:
-	shellcheck $(shell find ci -name "*.sh")
+.PHONY: checksums
+checksums:
+	cd $(OUT_PATH) && sha256sum $(NAME)-* > $(CHECKSUMS_FILE_NAME)
 
 .PHONY: clean
 clean:
 	rm -fr $(OUT_PATH)
-
-.PHONY: upload-release
-upload-release: sign-checksums-file
-upload-release:
-	ci/upload-release.sh
-
-.PHONY: sign-checksums-file
-sign-checksums-file: generate-checksums-file
-	ci/sign-checksums-file.sh
-
-.PHONY: generate-checksums-file
-generate-checksums-file:
-	ci/generate-checksums-file.sh
-
-.PHONY: release
-release:
-	ci/release.sh
 
 .PHONY: do-release
 do-release:

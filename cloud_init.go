@@ -9,18 +9,12 @@ import (
 	"text/template"
 )
 
-// cloudInitExtraData is the data made available to cloud_init_extra_file
-// templates, mirroring the vSphere fleeting plugin's own
-// cloud_init_extra_file mechanism ({{ .RunnerName }}/{{ .Vars.<key> }}) so
-// the same file/convention can be reused across providers.
+// cloudInitExtraData is the data available to cloud_init_extra_file templates.
 type cloudInitExtraData struct {
 	RunnerName string
 	Vars       map[string]string
 }
 
-// loadCloudInitExtraTemplate reads and parses the given path once, at
-// plugin Init(), so a broken template fails fast at startup rather than
-// silently on every scale-up.
 func loadCloudInitExtraTemplate(path string) (*template.Template, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -49,14 +43,8 @@ func renderCloudInitExtra(tmpl *template.Template, runnerName string, vars map[s
 	return buf.String(), nil
 }
 
-// buildMultipartUserData assembles the given #cloud-config documents into
-// the MIME multi-part format cloud-init expects for combining several
-// user-data documents into one. cloud-init merges write_files/runcmd/
-// packages across parts (list values append), so the plugin's own
-// generated config (e.g. the monitoring-agent installer) and the
-// operator-supplied extra config both apply instead of one clobbering the
-// other. Same technique as the vSphere fleeting plugin fork's
-// guestinfo.userdata handling.
+// buildMultipartUserData combines #cloud-config documents into the MIME
+// multipart body cloud-init expects when merging multiple user-data sources.
 func buildMultipartUserData(parts ...string) (string, error) {
 	var buf bytes.Buffer
 	mpw := multipart.NewWriter(&buf)
