@@ -2,11 +2,14 @@ package fleeting_plugin_yc
 
 // Field tags are `json:`, not `yaml:` - see README.md#instance-template for why.
 type InstanceTemplate struct {
-	Platform         string `json:"platform"`
-	Preemptible      bool   `json:"preemptible"`
-	Zone             string `json:"zone"`
-	ServiceAccount   string `json:"serviceAccount"`
-	VmServiceAccount string `json:"vmServiceAccount,omitempty"`
+	Platform    string `json:"platform"`
+	Preemptible bool   `json:"preemptible"`
+	// Zone is the legacy single-zone field. Zones, if non-empty, takes
+	// priority over it - see InstanceGroup.zoneIDs.
+	Zone             string   `json:"zone,omitempty"`
+	Zones            []string `json:"zones,omitempty"`
+	ServiceAccount   string   `json:"serviceAccount"`
+	VmServiceAccount string   `json:"vmServiceAccount,omitempty"`
 	Resources        struct {
 		CPU      int64 `json:"cpu,omitempty"`
 		Memory   int64 `json:"memory,omitempty"`
@@ -18,10 +21,15 @@ type InstanceTemplate struct {
 		Image string `json:"image,omitempty"`
 	} `json:"disk"`
 	Network struct {
-		Network  string `json:"network,omitempty"`
-		Subnet   string `json:"subnet,omitempty"`
-		Nat      bool   `json:"nat,omitempty"`
-		Security string `json:"security,omitempty"`
+		Network string `json:"network,omitempty"`
+		// Subnet is the legacy single-subnet field. Subnets, if non-empty,
+		// takes priority over it - see InstanceGroup.subnetIDs. Each entry
+		// must belong to the matching zone in Zones (YC pairs subnet to
+		// zone by each subnet's own zone, not by list position).
+		Subnet   string   `json:"subnet,omitempty"`
+		Subnets  []string `json:"subnets,omitempty"`
+		Nat      bool     `json:"nat,omitempty"`
+		Security string   `json:"security,omitempty"`
 	} `json:"network"`
 	Monitoring struct {
 		Enabled bool `json:"enabled,omitempty"`

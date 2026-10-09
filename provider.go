@@ -43,10 +43,31 @@ type InstanceGroup struct {
 	logger hclog.Logger
 }
 
+// zoneIDs returns the configured zones, preferring the plural Zones field
+// over the legacy singular Zone for backward compatibility with existing
+// template.yml files that only set `zone:`.
+func (g *InstanceGroup) zoneIDs() []string {
+	if len(g.template.Zones) > 0 {
+		return g.template.Zones
+	}
+	return []string{g.template.Zone}
+}
+
+// subnetIDs returns the configured subnets, preferring the plural Subnets
+// field over the legacy singular Subnet for backward compatibility. Each
+// entry must belong to one of the zones returned by zoneIDs - YC's Instance
+// Group service pairs each subnet to its own zone, not by list position.
+func (g *InstanceGroup) subnetIDs() []string {
+	if len(g.template.Network.Subnets) > 0 {
+		return g.template.Network.Subnets
+	}
+	return []string{g.template.Network.Subnet}
+}
+
 func (g *InstanceGroup) GenerateInstanceGroup() *instancegroup.InstanceTemplate {
 	instanceGroupTemplateNetwork := &instancegroup.NetworkInterfaceSpec{
 		NetworkId:            g.template.Network.Network,
-		SubnetIds:            []string{g.template.Network.Subnet},
+		SubnetIds:            g.subnetIDs(),
 		PrimaryV4AddressSpec: &instancegroup.PrimaryAddressSpec{},
 	}
 
@@ -97,7 +118,9 @@ func (g *InstanceGroup) GenerateInstanceGroupRequest() *instancegroup.CreateInst
 
 	instanceTemplate := g.GenerateInstanceGroup()
 	var instanceGroupTemplateZone []*instancegroup.AllocationPolicy_Zone
-	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: g.template.Zone})
+	for _, zoneID := range g.zoneIDs() {
+		instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: zoneID})
+	}
 	instanceGroupCreateReq := &instancegroup.CreateInstanceGroupRequest{
 		FolderId:         g.FolderId,
 		Name:             g.Name,
@@ -118,7 +141,9 @@ func (g *InstanceGroup) GenerateInstanceGroupRequest() *instancegroup.CreateInst
 func (g *InstanceGroup) GenerateUpdateInstanceGroupRequest() *instancegroup.UpdateInstanceGroupRequest {
 	instanceTemplate := g.GenerateInstanceGroup()
 	var instanceGroupTemplateZone []*instancegroup.AllocationPolicy_Zone
-	instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: g.template.Zone})
+	for _, zoneID := range g.zoneIDs() {
+		instanceGroupTemplateZone = append(instanceGroupTemplateZone, &instancegroup.AllocationPolicy_Zone{ZoneId: zoneID})
+	}
 	instanceGroupCreateReq := &instancegroup.UpdateInstanceGroupRequest{
 		InstanceGroupId:  g.InstanceGroupId,
 		Name:             g.Name,

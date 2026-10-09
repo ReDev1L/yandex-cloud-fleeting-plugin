@@ -61,6 +61,27 @@ cloud_init_vars:
 
 `instance_template.go`'s struct tags are `json:`, not `yaml:` — the file is parsed via `github.com/ghodss/yaml`, which converts YAML to JSON and unmarshals with `encoding/json`. That package only reads `json:` tags; without one it falls back to case-insensitive matching on the Go field name, which happens to work for single-word/camelCase keys (`platform`, `serviceAccount`) but silently drops any snake_case key, parsing it as a zero value with no error. `instance_template_test.go` guards this by unmarshalling real YAML rather than setting struct fields directly in Go.
 
+### Multi-zone
+
+By default the instance group lives in a single zone/subnet (`zone` +
+`network.subnet` above). To span multiple zones, set the plural fields
+instead — they take priority over the singular ones when non-empty:
+
+```yaml
+zones: ["ru-central1-a", "ru-central1-b"]
+network:
+  subnets: ["<subnet id in a>", "<subnet id in b>"]
+```
+
+YC's Instance Group service pairs each subnet to whichever zone it actually
+belongs to (subnets are inherently zone-scoped) — not by matching list
+position — so the order of `subnets` relative to `zones` doesn't matter, but
+every zone in `zones` needs exactly one subnet in `subnets` that belongs to
+it, or instance-group creation will fail for that zone. Leave `zone`/`subnet`
+in place alongside the plural fields if you want a quick way to fall back to
+single-zone by deleting the plural ones — the singular fields are otherwise
+ignored once `zones`/`subnets` are set.
+
 ### IAM Setup
 
 Two service accounts, different jobs:
